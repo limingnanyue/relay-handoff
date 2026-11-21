@@ -1,0 +1,55 @@
+services:
+  db:
+    image: postgres:17-bookworm
+    environment:
+      POSTGRES_DB: relay
+      POSTGRES_USER: relay
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?请设置数据库密码}
+    volumes:
+      - postgresql:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U relay -d relay"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    restart: unless-stopped
+  relay:
+    build: .
+    env_file: .env
+    environment:
+      RELAY_DEMO: "0"
+      RELAY_HOST: 0.0.0.0
+      RELAY_DATA: /app/.relay
+      RELAY_TRUST_PROXY: "1"
+      RELAY_ORIGIN: https://${RELAY_DOMAIN:?请设置 Relay 域名}
+      PORT: 3000
+      DATABASE_URL: postgresql://relay:${POSTGRES_PASSWORD:?请设置数据库密码}@db:5432/relay
+    volumes:
+      - relay_data:/app/.relay
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/health').then(response=>process.exit(response.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 20s
+      timeout: 4s
+      retries: 4
+    restart: unless-stopped
+  gateway:
+    image: caddy:2-alpine
+    environment:
+      RELAY_DOMAIN: ${RELAY_DOMAIN:?请设置 Relay 域名}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - tls:/data
+    depends_on:
+      relay:
+        condition: service_healthy
+    restart: unless-stopped
+volumes:
+  postgresql:
+  relay_data:
+  tls:

@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>接棒 Relay 布局回归</title>
+<style>
+  body{font:14px system-ui,sans-serif;margin:20px;background:#f4f7fb;color:#0f172a}
+  #results{line-height:1.7} .viewport{overflow-x:auto;margin-block:12px}
+  iframe{border:1px solid #b4c2d6;border-radius:8px;background:white;height:680px;display:block}
+</style>
+<h1>接棒 Relay 布局回归</h1>
+<ol id="results" aria-live="polite"></ol>
+<main id="screens"></main>
+<script type="module">
+  const sizes = [375, 768, 1024, 1440]
+  const pages = [
+    ['总览', '/#/overview', '.risk-table'], ['报告', '/#/position/demo-east/report', '.score-ring'], ['资产地图', '/#/position/demo-east/assets', '.category-list'],
+    ['访谈', '/#/position/demo-cs/interview', '.transcript'], ['交接包', '/#/position/demo-east/pack', '.pack-entry'],
+    ['验收', '/#/position/demo-east/exam', '.exam-card'], ['确认书', '/#/position/demo-enterprise/letter', '.signature-grid'],
+  ]
+  const settingsPages = [
+    ['组织与员工', '/#/organization', '.employee-table'], ['账户与安全', '/#/settings/account', '.account-settings'],
+    ['导出审批', '/#/settings/approvals', '.table-panel'], ['数据与权限', '/#/settings/data', '.settings-data'],
+    ['运行监控', '/#/settings/monitor', '.report-detail-grid .setting-lines'], ['关于接棒', '/#/settings/about', '.about-page'],
+  ]
+  async function setSession(role) {
+    const response = await fetch(role ? '/api/session/demo' : '/api/session/logout', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(role ? { role } : {}),
+    })
+    if (!response.ok) throw Error('无法初始化布局测试会话')
+  }
+  async function waitFor(frame, selector) {
+    for (let retry = 0; retry < 100; retry += 1) {
+      if (frame.contentDocument?.querySelector(selector)) return frame.contentDocument
+      await new Promise((resolve) => setTimeout(resolve, 80))
+    }
+    throw Error('页面未就绪')
+  }
+  async function checkPage(width, [page, path, selector], authenticated) {
+    const item = document.createElement('li')
+    item.textContent = `${width}px ${page} 正在检查`
+    document.querySelector('#results').append(item)
+    const region = document.createElement('section')
+    region.className = 'viewport'
+    region.id = `preview-${width}-${path.split('/').at(-1) || 'login'}`
+    const frame = document.createElement('iframe')
+    frame.width = width
+    frame.title = `${width}px ${page}预览`
+    frame.src = path
+    region.append(frame)
+    document.querySelector('#screens').append(region)
+    try {
+      const pageDocument = await waitFor(frame, selector)
+      const sidebar = pageDocument.querySelector('.sidebar')
+      const correctWidth = width < 720 ? 0 : width < 1200 ? 72 : 232
+      if (authenticated ? sidebar?.getBoundingClientRect().width !== correctWidth : sidebar) throw Error('侧栏展示错误')
+      if (pageDocument.documentElement.scrollWidth > frame.contentWindow.innerWidth + 1) throw Error('页面存在横向溢出')
+      if (page === '组织与员工' && width < 720) {
+        const table = pageDocument.querySelector('.employee-panel .table-scroll')
+        if (table.scrollWidth <= table.clientWidth || getComputedStyle(table).overflowX !== 'auto') throw Error('员工表格未在独立区域横滚')
+      }
+      if (page === '报告' && !pageDocument.querySelector('.score-ring').getAttribute('aria-label').includes('关键项未通过')) throw Error('缺少风险文字标签')
+      if (page === '关于接棒' && !pageDocument.querySelector('.settings-nav a[href="#/settings/about"][aria-current="page"]')) throw Error('关于接棒未标为当前分类')
+      const preview = document.createElement('a')
+      preview.href = `#${region.id}`
+      preview.textContent = `${width}px ${page} 通过`
+      item.replaceChildren(preview)
+      return true
+    } catch (error) {
+      item.textContent = `${width}px ${page} 失败 · ${error.message}`
+      return false
+    }
+  }
+  async function checkInteraction(title, frameTitle, run) {
+    const item = document.createElement('li')
+    item.textContent = `${title} 正在检查`
+    document.querySelector('#results').append(item)
+    const frame = document.querySelector(`iframe[title="1440px ${frameTitle}预览"]`)
+    const fetchPage = frame.contentWindow.fetch
+    try {
+      await run(frame, fetchPage.bind(frame.contentWindow))
+      item.textContent = `${title} 通过`
+      return true
+    } catch (error) {
+      item.textContent = `${title} 失败 · ${error.message}`
+      return false
+    } finally {
+      frame.contentWindow.fetch = fetchPage
+    }
+  }
+
+  function checkSettings() {
+    return checkInteraction('设置读取重试与分类切换', '账户与安全', async (frame, fetchPage) => {
+      let reads = 0
+      frame.contentWindow.fetch = (path, options) => {
+        if (path === '/api/settings' && ++reads === 1) return Promise.resolve(Response.json({ error: '暂时无法读取设置。' }, { status: 503 }))
+        return fetchPage(path, options)
+      }
+      const page = frame.contentDocument
+      const visit = (category) => page.querySelector(`.settings-nav a[href="#/settings/${category}"]`).click()
+      visit('approvals')
+      await waitFor(frame, '.notice--red button')
+      page.querySelector('.notice--red button').click()
+      await waitFor(frame, '.table-panel')
+      visit('data')
+      await waitFor(frame, '.settings-data')
+      visit('account')
+      await waitFor(frame, '.account-settings')
+      visit('about')
+      await waitFor(frame, '.about-page')
+      visit('monitor')
+      await waitFor(frame, '.settings-nav a[href="#/settings/monitor"][aria-current="page"]')
+      await waitFor(frame, '.report-detail-grid .setting-lines')
+      if (reads !== 2) throw Error(`切换分类后读取了 ${reads} 次设置，预期为首次失败和重试共 2 次`)
+    })
+  }
+
+  function checkDirectorySave() {
+    return checkInteraction('部门保存防误关闭与失败重试', '组织与员工', async (frame, fetchPage) => {
+      const firstSave = Promise.withResolvers()
+      let submissions = 0
+      frame.contentWindow.fetch = (path, options) => {
+        if (path !== '/api/organization/departments') return fetchPage(path, options)
+        if (++submissions === 1) return firstSave.promise
+        return Promise.resolve(Response.json({ id: 'layout-check', name: JSON.parse(options.body).name }))
+      }
+      const page = frame.contentDocument
+      page.querySelector('.page-heading .heading-actions button').click()
+      await waitFor(frame, 'dialog[open] form')
+      const dialog = page.querySelector('dialog')
+      const name = dialog.querySelector('input[name="name"]')
+      const submit = dialog.querySelector('button[type="submit"]')
+      name.value = '布局回归部门'
+      submit.click()
+      await waitFor(frame, 'dialog button[type="submit"]:disabled')
+      dialog.dispatchEvent(new Event('cancel', { cancelable: true }))
+      await new Promise(requestAnimationFrame)
+      if (!dialog.open) throw Error('保存期间按 Esc 关闭了弹窗')
+      dialog.click()
+      await new Promise(requestAnimationFrame)
+      if (!dialog.open || !dialog.querySelector('.dialog-header button').disabled) throw Error('保存期间仍可关闭弹窗')
+      firstSave.resolve(Response.json({ error: '保存失败，可以重试。' }, { status: 503 }))
+      await waitFor(frame, 'dialog [role="alert"]')
+      if (name.value !== '布局回归部门' || submit.disabled) throw Error('保存失败后未保留输入或恢复提交按钮')
+      submit.click()
+      await waitFor(frame, '.toast')
+      if (dialog.open || submissions !== 2) throw Error('重试后未关闭弹窗或提交次数不正确')
+    })
+  }
+
+  const checks = []
+  for (const [role, group] of [[null, [['登录', '/', '.login-form']]], ['owner', pages], ['hr', settingsPages]]) {
+    await setSession(role)
+    checks.push(...await Promise.all(sizes.flatMap((width) => group.map((page) => checkPage(width, page, Boolean(role))))))
+  }
+  const interactions = await Promise.all([checkSettings(), checkDirectorySave()])
+  document.title = `接棒布局回归 ${checks.filter(Boolean).length}/${checks.length} · 交互 ${interactions.filter(Boolean).length}/${interactions.length}`
+</script>
+</html>
