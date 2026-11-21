@@ -46,3 +46,7 @@ node scripts/layout-check.mjs
 ```
 
 布局验证页在 `http://localhost:3010/layout-check`，使用独立演示数据。模型接口、正式账户、Postgres、对象存储与 HTTPS 的配置见 [架构与上线手册](docs/架构与上线.md)。试点和法务材料见 [试点与合规](docs/试点与合规.md)。逐项证据与待验收项见 [交付验收](docs/交付验收.md)。
+
+## 开源许可证
+
+接棒 Relay 采用 [MIT 许可证](LICENSE)。
